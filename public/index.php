@@ -39,6 +39,8 @@ require __DIR__.'/../vendor/autoload.php';
  */
 use GuzzleHttp\Client;
 use GuzzleHttp\Psr7\HttpFactory;
+use OpenTelemetry\API\Trace\SpanInterface;
+use OpenTelemetry\API\Trace\SpanKind;
 use OpenTelemetry\Contrib\Jaeger\Exporter as JaegerExporter;
 use OpenTelemetry\SDK\Common\Time\ClockFactory;
 use OpenTelemetry\SDK\Trace\TracerProvider;
@@ -54,10 +56,10 @@ $httpFactory = new HttpFactory();
 $tracerProvider = new TracerProvider(
     [
         new SimpleSpanProcessor(
-            new ConsoleSpanExporter()
+            JaegerExporter::fromConnectionString('http://jaeger:9412/api/v2/spans', 'Laravel')
         ),
         new SimpleSpanProcessor(
-            new JaegerExporter('LARAVEEEEL', 'http://jaeger:9412/api/v2/spans', $httpClient, $httpFactory, $httpFactory)
+            new ConsoleSpanExporter()
         ),
     ],
     new AlwaysOnSampler(),
@@ -83,11 +85,12 @@ $app = require_once __DIR__.'/../bootstrap/app.php';
 
 try {
     $kernel = $app->make(Kernel::class);
-    
+
     $request = Request::capture();
-    $span = $tracer->spanBuilder($request->url())->startSpan();
+    $span = $tracer->spanBuilder($request->url())
+        ->setSpanKind(SpanKind::KIND_SERVER)
+        ->startSpan();
     $spanScope = $span->activate();
-    
     try {
         $response = $kernel->handle($request)->send();
         $kernel->terminate($request, $response);
