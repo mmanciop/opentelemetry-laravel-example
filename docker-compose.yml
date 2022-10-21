@@ -16,7 +16,6 @@ services:
         environment:
             WWWUSER: '${WWWUSER}'
             LARAVEL_SAIL: 1
-            LOG_LEVEL: debug
             XDEBUG_MODE: '${SAIL_XDEBUG_MODE:-off}'
             XDEBUG_CONFIG: '${SAIL_XDEBUG_CONFIG:-client_host=host.docker.internal}'
         volumes:
@@ -25,10 +24,6 @@ services:
             - sail
         depends_on:
             - mysql
-            - redis
-            - meilisearch
-            - mailhog
-            - selenium
     mysql:
         image: 'mysql/mysql-server:8.0'
         ports:
@@ -49,47 +44,10 @@ services:
             test: ["CMD", "mysqladmin", "ping", "-p${DB_PASSWORD}"]
             retries: 3
             timeout: 5s
-    redis:
-        image: 'redis:alpine'
-        ports:
-            - '${FORWARD_REDIS_PORT:-6379}:6379'
-        volumes:
-            - 'sail-redis:/data'
-        networks:
-            - sail
-        healthcheck:
-            test: ["CMD", "redis-cli", "ping"]
-            retries: 3
-            timeout: 5s
-    meilisearch:
-        image: 'getmeili/meilisearch:latest'
-        ports:
-            - '${FORWARD_MEILISEARCH_PORT:-7700}:7700'
-        volumes:
-            - 'sail-meilisearch:/meili_data'
-        networks:
-            - sail
-        healthcheck:
-            test: ["CMD", "wget", "--no-verbose", "--spider",  "http://localhost:7700/health"]
-            retries: 3
-            timeout: 5s
-    mailhog:
-        image: 'mailhog/mailhog:latest'
-        ports:
-            - '${FORWARD_MAILHOG_PORT:-1025}:1025'
-            - '${FORWARD_MAILHOG_DASHBOARD_PORT:-8025}:8025'
-        networks:
-            - sail
-    selenium:
-        image: 'selenium/standalone-chrome'
-        extra_hosts:
-            - 'host.docker.internal:host-gateway'
-        volumes:
-            - '/dev/shm:/dev/shm'
-        networks:
-            - sail
     jaeger:
         image: 'jaegertracing/all-in-one'
+        environment:
+            COLLECTOR_ZIPKIN_HOST_PORT: ':9412'
         ports:
             - '9412:9412' # Zipkin endpoint
             - '14250:14250' # gRPC endpoint
@@ -102,8 +60,4 @@ networks:
         driver: bridge
 volumes:
     sail-mysql:
-        driver: local
-    sail-redis:
-        driver: local
-    sail-meilisearch:
         driver: local
