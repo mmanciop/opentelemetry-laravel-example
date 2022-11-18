@@ -35,42 +35,6 @@ if (file_exists($maintenance = __DIR__.'/../storage/framework/maintenance.php'))
 require __DIR__.'/../vendor/autoload.php';
 
 /*
- | Start OpenTelemetry setup
- */
-use GuzzleHttp\Client;
-use GuzzleHttp\Psr7\HttpFactory;
-use OpenTelemetry\API\Trace\SpanInterface;
-use OpenTelemetry\API\Trace\SpanKind;
-use OpenTelemetry\Contrib\Jaeger\Exporter as JaegerExporter;
-use OpenTelemetry\SDK\Common\Time\ClockFactory;
-use OpenTelemetry\SDK\Trace\TracerProvider;
-use OpenTelemetry\SDK\Trace\Sampler\AlwaysOnSampler;
-use OpenTelemetry\SDK\Trace\SpanExporter\ConsoleSpanExporter;
-use OpenTelemetry\SDK\Trace\SpanProcessor\BatchSpanProcessor;
-use OpenTelemetry\SDK\Trace\SpanProcessor\SimpleSpanProcessor;
-use OpenTelemetry\Contrib\OtlpHttp\Exporter as OtlpHttpExporter;
-
-$httpClient = new Client();
-$httpFactory = new HttpFactory();
-
-$tracerProvider = new TracerProvider(
-    [
-        new SimpleSpanProcessor(
-            JaegerExporter::fromConnectionString('http://jaeger:9412/api/v2/spans', 'Laravel')
-        ),
-        new SimpleSpanProcessor(
-            new ConsoleSpanExporter()
-        ),
-    ],
-    new AlwaysOnSampler(),
-);
-
-$tracer = $tracerProvider->getTracer('Laravel');
-/*
- | End OpenTelemetry setup
- */
-
-/*
 |--------------------------------------------------------------------------
 | Run The Application
 |--------------------------------------------------------------------------
@@ -83,18 +47,84 @@ $tracer = $tracerProvider->getTracer('Laravel');
 
 $app = require_once __DIR__.'/../bootstrap/app.php';
 
-try {
+/*
+ | Start OpenTelemetry setup
+ */
+use GuzzleHttp\Client;
+use GuzzleHttp\Psr7\HttpFactory;
+use OpenTelemetry\API\Trace\SpanInterface;
+use OpenTelemetry\API\Trace\SpanKind;
+use OpenTelemetry\API\Trace\StatusCode;
+use OpenTelemetry\Contrib\OtlpHttp\Exporter as OtlpHttpExporter;
+use OpenTelemetry\SDK\Common\Time\ClockFactory;
+use OpenTelemetry\SDK\Trace\TracerProvider;
+use OpenTelemetry\SDK\Trace\Sampler\AlwaysOnSampler;
+use OpenTelemetry\SDK\Trace\SpanExporter\ConsoleSpanExporter;
+use OpenTelemetry\SDK\Trace\SpanProcessor\BatchSpanProcessor;
+use OpenTelemetry\SDK\Trace\SpanProcessor\SimpleSpanProcessor;
+use OpenTelemetry\SemConv\TraceAttributes;
+
+$httpClient = new Client();
+$httpFactory = new HttpFactory();
+
+// The OtlpHttp\Exporter will look in $_ENV, so we need to work around the configuration mechanism
+// $_ENV['OTEL_SERVICE_NAME'] = "laravel_local";
+// $_ENV['OTEL_EXPORTER_OTLP_TRACES_ENDPOINT'] = "https://ga-otlp.lumigo-tracer-edge.golumigo.com/v1/traces";
+// $_ENV['OTEL_EXPORTER_OTLP_TRACES_HEADERS'] = "Authorization=LumigoToken <PUT_LUMIGO_TOKEN_HERE>";
+
+$tracerProvider = new TracerProvider(
+    [
+        new BatchSpanProcessor(
+            OtlpHttpExporter::fromConnectionString(),
+            ClockFactory::getDefault(),
+        ),
+        new SimpleSpanProcessor(
+            new ConsoleSpanExporter(),
+        ),
+    ],
+    new AlwaysOnSampler(),
+);
+
+$tracer = $tracerProvider->getTracer('Laravel');
+/*
+ | End OpenTelemetry setup
+ */
+
+ try {
     $kernel = $app->make(Kernel::class);
 
     $request = Request::capture();
-    $span = $tracer->spanBuilder($request->url())
+    $span = $tracer->spanBuilder($request->method() . " " . $request->url())
         ->setSpanKind(SpanKind::KIND_SERVER)
+        ->setAttribute(TraceAttributes::HTTP_METHOD, strtoupper($request->method()))
+        ->setAttribute(TraceAttributes::HTTP_USER_AGENT, $request->header("user-agent"))
+        // TODO http.request_content_length
+        // TODO http.response_content_length
+        ->setAttribute(TraceAttributes::HTTP_SCHEME, strtok($request->schemeAndHttpHost(), ":"))
+        ->setAttribute(TraceAttributes::HTTP_TARGET, $request->path())
+        // ->setAttribute(OpenTelemetry\SemConv\TraceAttributes::HTTP_ROUTE, ???) // This requires hooking deeper in controllers
         ->startSpan();
+
+    foreach ($request->header() as $headerName => $headerValues) {
+        $span->setAttribute("http.request.header." . str_replace("-", "_", strtolower($headerName)), $request->header($headerName));
+    }
+
     $spanScope = $span->activate();
     try {
         $response = $kernel->handle($request)->send();
+
+        $span->setAttribute(TraceAttributes::HTTP_STATUS_CODE, $response->status());
+        foreach ($response->headers as $headerName => $headerValues) {
+            $span->setAttribute("http.response.header." . str_replace("-", "_", strtolower($headerName)), $response->headers->get($headerName));
+        }
+
         $kernel->terminate($request, $response);
-        // TODO ReportException on exception
+
+        $span->setStatus(StatusCode::STATUS_OK);
+    } catch (Exception $e) {
+        $span->setStatus(StatusCode::STATUS_ERROR, $e->getMessage());
+        $span->recordException($e, [TraceAttributes::EXCEPTION_ESCAPED => true]);
+        throw $e;
     } finally {
         $span->end();
         $spanScope->detach();
